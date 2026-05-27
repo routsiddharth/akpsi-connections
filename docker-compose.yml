@@ -1,0 +1,40 @@
+# Local dev mirror of the Railway services. The app reads DATABASE_URL / NEO4J_* from
+# the environment in both places, so nothing here is local-only at the code level.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: akpsi
+      POSTGRES_PASSWORD: akpsi
+      POSTGRES_DB: akpsi
+    ports:
+      # Host 5433 -> container 5432, to avoid clashing with a native Postgres on 5432.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # schema.sql runs automatically on first boot of an empty data dir
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U akpsi -d akpsi"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: neo4j/akpsi_neo4j
+    ports:
+      - "7474:7474"   # http browser
+      - "7687:7687"   # bolt
+    volumes:
+      - neo4jdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
+  neo4jdata:

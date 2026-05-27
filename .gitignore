@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/*.json
+!data/.gitkeep
+.DS_Store
+
+# Source spreadsheets contain real alumni/undergrad PII — keep local, never publish.
+*.xlsx
