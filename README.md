@@ -64,10 +64,11 @@ This is being built toward the vision above. Where things stand:
 | Step | What | Status |
 |------|------|--------|
 | 1 | **Alumni → Postgres.** Parse the Alumni Master Key, canonicalize messy firm strings, load `persons / firms / groups / worked_at`. `research.py` seeds the (hand-curated) enrichment that the **enrichment agent** will automate. | ✅ **Done** (agent: planned) |
-| 2 | **Big/little → `relationships`.** Parse the Lin Trees Linktrees, resolve names to people (fuzzy-match + review), populate the lineage edges. | 🔜 Planned |
-| 3 | **Neo4j projection.** `sync_to_neo4j.py` — full rebuild (truncate + batched MERGE) from Postgres. | 🔜 Planned |
-| 4 | **FastAPI API + magic-link claim flow.** Search, ranked "who-can-get-me-in" paths (**search agent**), intro requests (**intro-draft agent**), `claim_tokens`. | 🔜 Planned |
-| 5 | **Next.js frontend on Vercel.** Searchable directory + family-tree view. | 🔜 Planned |
+| 2 | **Lin Trees → `big_of`.** Parse the family-tree workbook (9 lineage tabs + roster), resolve names against alumni + each other with a nickname-aware fuzzy matcher, populate big/little edges. Same review-queue pattern as firm canonicalization (`person_aliases` audit). Grad-year guard prevents cross-generation false positives (e.g. Jake Lee 2027 ≠ Jae Lee 2023). | ✅ **Done** |
+| 3 | **Brother Profile → enriched actives.** Ingest current brothers' grad year, school, industries, and `worked_at` history. Overwrites lin-tree stubs freely; routes Master-Key conflicts to a **per-field** review queue (`brother_conflicts.json`). Every column change logged to `persons_audit` with `source_before / source_after`. Fully idempotent. | ✅ **Done** |
+| 4 | **Neo4j projection.** `sync_to_neo4j.py` — full rebuild (truncate + batched MERGE) from Postgres. | 🔜 Planned |
+| 5 | **FastAPI API + magic-link claim flow.** Search, ranked "who-can-get-me-in" paths (**search agent**), intro requests (**intro-draft agent**), `claim_tokens`. | 🔜 Planned |
+| 6 | **Next.js frontend on Vercel.** Searchable directory + family-tree view. | 🔜 Planned |
 
 ## Run it (local)
 
@@ -78,11 +79,24 @@ cp .env.example .env
 docker compose up -d                  # Postgres + Neo4j (schema auto-loads)
 pip install -r requirements.txt
 
-python -m alumni_pipeline.load        # extract → canonicalize → load Postgres
-python -m alumni_pipeline.review_cli  # (optional) resolve ambiguous firm matches
+# Step 1 — alumni
+python -m alumni_pipeline.load
+python -m alumni_pipeline.review_cli       # (optional) ambiguous firm matches
+
+# Step 2 — lin trees
+psql "$DATABASE_URL" -f db/migrations/002_lin_trees.sql
+python -m lin_pipeline.run
+python -m lin_pipeline.review_cli          # (optional) ambiguous name matches
+
+# Step 3 — brother profile
+psql "$DATABASE_URL" -f db/migrations/003_brother_profile.sql
+python -m brother_pipeline.run
+python -m brother_pipeline.review_cli      # ambiguous matches + per-field master-key conflicts
 ```
 
-`load` is an idempotent full rebuild — safe to run repeatedly.
+Each pipeline is idempotent — safe to re-run. Every Brother Profile column change is
+recorded in `persons_audit` so you can answer *"what overwrote what, when, from which
+source?"* after the fact.
 
 > **Note:** Postgres is mapped to host port **5433** (not 5432) to avoid clashing with a
 > native Postgres install. Connection strings use `127.0.0.1`, not `localhost`, to dodge
@@ -124,15 +138,28 @@ Next.js on Vercel · Railway.
 
 ## Schema
 
-`db/schema.sql` is the source of truth:
+`db/schema.sql` is the source of truth; `db/migrations/00X_*.sql` are additive layers
+for Steps 2 and 3.
 
 - **`firms`** — canonical organizations; `org_type` (company/school/government/…) so
   schools and startups in the POST GRAD column aren't mislabeled.
 - **`groups`** — divisions within a firm (IBD, ECM, a YC startup, …).
-- **`persons`** — alumni and current brothers; `is_alumnus = FALSE` for lin-tree-only
-  undergrads (Step 2).
-- **`worked_at`** — employment/education history; `seq 0` = current, `1..` = prior.
-- **`relationships`** — big/little lineage edges (Step 2).
-- **`firm_aliases`** — audit trail of every raw → canonical firm decision.
+- **`persons`** — alumni *and* active brothers. Row-level provenance lives on
+  `source` (`alumni_master_key` / `brother_profile` / `linktree_explicit` /
+  `linktree_inferred` / `manual` / `external_added`), with `person_type`
+  (`alumnus` / `active` / …) decoupled from how the data was sourced.
+- **`worked_at`** — employment + internship history; `seq 0` = current, `1..` = prior.
+  Step 1 sets `source='alumni_master'`, Step 3 sets `source='brother_profile'`.
+- **`big_of`** — big/little lineage edges from Lin Trees (Step 2). UNIQUE `(big_id,
+  little_id)`; `confidence` reflects the weakest side's resolution score.
+- **`pledged_with`** — flat `person → pledge_class` (Greek-letter name) from
+  Brother Profile (Step 3).
+- **`firm_aliases`** / **`person_aliases`** — raw-string → canonical-row audit
+  trails. The UNIQUE on `raw_string` is also the idempotency key on re-runs.
+- **`persons_audit`** — every Brother-Profile column change with
+  `(column, old, new, source_before, source_after, pipeline)`. So "what overwrote
+  what" is always answerable.
+- **`relationships`** — Step-1 placeholder, superseded by `big_of`; left in place
+  so migrations stay additive.
 
-`intro_requests` and `claim_tokens` land with Step 4.
+`intro_requests` and `claim_tokens` land with Step 5.
